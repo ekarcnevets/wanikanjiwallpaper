@@ -1,17 +1,15 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
-using System.IO.IsolatedStorage;
-using System.Linq;
 using System.Net;
 using System.Text;
-using Windows.System;
+using Windows.Foundation;
+using Windows.Storage;
+using Windows.System.UserProfile;
 using Newtonsoft.Json;
 using System.Drawing;
 using System.Reflection;
-using Encoder = System.Drawing.Imaging.Encoder;
 
 namespace WaniKanjiWallpaper
 {
@@ -19,18 +17,15 @@ namespace WaniKanjiWallpaper
 	{
 		public static readonly string UrlBase = "https://www.wanikani.com/api/user/{0}/{1}{2}";
 		public static string ApiKey;
-		public static string TempPath;
 
 		static void Main(string[] args)
 		{
-			//TODO: Change command line args to App.config variables
-			if (args.Length != 2)
+			if (args.Length != 1)
 			{
-				Console.WriteLine("USAGE: WaniKanjiWallpaper [ApiKey] [Path to save temp output]");
+				Console.WriteLine(@"USAGE: WaniKanjiWallpaper [ApiKey]");
 			}
 
 			ApiKey = args[0];
-			TempPath = args[1];
 
 			ApiResponse apiResponse;
 			
@@ -53,29 +48,65 @@ namespace WaniKanjiWallpaper
 			}
 
 			var image = DrawKanji(apiResponse);
+			SetLockscreen(image);
+		}
 
-			SavePng(@"D:\wk.jpg", image, 100L);
+		private static void SetLockscreen(Bitmap image)
+		{
+			try
+			{
+				// Get the image as a byte array for writing to the file we just created
+				var imageBytes = new byte[0];
+				using (var stream = new MemoryStream())
+				{
+					image.Save(stream, ImageFormat.Png);
+					imageBytes = stream.ToArray();
+				}
+			
+				var createFileTask = KnownFolders.PicturesLibrary.CreateFileAsync("wk.png", CreationCollisionOption.ReplaceExisting);
+				createFileTask.Completed = delegate(IAsyncOperation<StorageFile> info, AsyncStatus status)
+				{
+					if (status != AsyncStatus.Completed)
+					{
+						OnError("creating temporary file failed", info.ErrorCode.Message);
+					}
 
-			//var lockScreen = Windows.System.UserProfile.LockScreen.SetImageStreamAsync();
+					var imageStorageFile = info.GetResults();
+					FileIO.WriteBytesAsync(imageStorageFile, imageBytes);
+
+					var setLockscreenTask = LockScreen.SetImageFileAsync(imageStorageFile);
+					setLockscreenTask.Completed = SetLockscreenTaskComplete;
+				};
+			}
+			catch (Exception ex)
+			{
+				OnError("setting lockscreen failed", ex.Message);
+			}
+		}
+
+		private static void SetLockscreenTaskComplete(IAsyncAction asyncInfo, AsyncStatus asyncStatus)
+		{
+			if (asyncStatus != AsyncStatus.Completed)
+			{
+				OnError("setting lockscreen failed", asyncInfo.ErrorCode.Message);
+			}
 		}
 
 		private static Bitmap DrawKanji(ApiResponse apiResponse)
 		{
 			if (apiResponse.RequestedInformation.Count > 40)
 			{
-				Console.WriteLine("WaniKanjiWallpaper fetch - too many kanji! ({0})", apiResponse.RequestedInformation.Count);
+				Console.WriteLine("WaniKanjiWallpaper fetch warning: too many kanji! ({0})", apiResponse.RequestedInformation.Count);
 				Console.ReadLine();
 			}
 
 			if (apiResponse.RequestedInformation == null)
 			{
-				Environment.Exit(1);
+				OnError("fetch failed", "api returned no results");
 			}
 			else if (apiResponse.Error != null)
 			{
-				Console.WriteLine("WaniKanjiWallpaper fetch failed: {0}", apiResponse.Error.Message);
-				Console.ReadLine();
-				Environment.Exit(2);
+				OnError("fetch failed", apiResponse.Error.Message);
 			}
 
 			var myAssembly = Assembly.GetExecutingAssembly();
@@ -125,32 +156,6 @@ namespace WaniKanjiWallpaper
 			return new Uri(String.Format(UrlBase, ApiKey, requestedInfo, additionalInfoString));
 		}
 
-		public static void SavePng(string path, Bitmap image, long quality)
-		{
-			// Encoder parameter for image quality
-			var qualityParam = new EncoderParameter(Encoder.Quality, quality);
-
-			// Jpeg image codec
-			var pngCodec = GetEncoderInfo("image/jpeg");
-
-			if (pngCodec == null)
-				return;
-
-			var encoderParams = new EncoderParameters(1);
-			encoderParams.Param[0] = qualityParam;
-
-			image.Save(path, pngCodec, encoderParams);
-		}
-
-		private static ImageCodecInfo GetEncoderInfo(string mimeType)
-		{
-			// Get image codecs for all image formats
-			var codecs = ImageCodecInfo.GetImageEncoders();
-
-			// Find the correct image codec
-			return codecs.FirstOrDefault(t => t.MimeType == mimeType);
-		}
-
 		private static SolidBrush GetSrsBrush(UserSpecific userSpecificInfo)
 		{
 			Color srsColor;
@@ -179,6 +184,13 @@ namespace WaniKanjiWallpaper
 			}
 
 			return new SolidBrush(srsColor);
+		}
+
+		private static void OnError(string errorType, string errorMessage)
+		{
+			Console.WriteLine("WaniKanjiWallpaper {0}: {1}", errorType, errorMessage);
+			Console.ReadLine();
+			Environment.Exit(1);
 		}
 	}
 }
